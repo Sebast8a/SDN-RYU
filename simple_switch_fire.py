@@ -30,18 +30,18 @@ class SimpleSwitch13(app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(SimpleSwitch13, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
-        self.block_policies = []
+        self.block_policies = [] #Lista para agregar regla de bloqueos.
         self.load_policies()
 
     def load_policies(self):
-        with open('firewall-policies.csv', 'r') as f:
+        with open('firewall-policies.csv', 'r') as f: #Leer archivo
             reader = csv.reader(f)
-            next(reader, None)
+            next(reader, None) #Ignorar primera fila
             for row in reader:
                 if len(row) >= 3:
                     src_mac = row[1].strip()
                     dst_mac = row[2].strip()
-                    self.block_policies.append((src_mac, dst_mac))
+                    self.block_policies.append((src_mac, dst_mac)) #Agregar MACs de origen o destino
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -61,7 +61,7 @@ class SimpleSwitch13(app_manager.RyuApp):
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
 
-        for src_mac, dst_mac in self.block_policies:
+        for src_mac, dst_mac in self.block_policies: #Iterar sobre todas las MACs de la lista.
 
             # Bloquear por MAC origen
             if src_mac:
