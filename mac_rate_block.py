@@ -1,12 +1,12 @@
 from ryu.base import app_manager
 from ryu.controller import ofp_event
-from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_5
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
-
+from ryu.lib import hub
 import time
 
 
@@ -19,34 +19,62 @@ class MacRateBlocker(app_manager.RyuApp):
         #Lista de switches conectados al controlador
         self.datapath = {}
 
-        # Registro de paquetes por MAC origen
-        self.mac_activity = {}
+        # Guarda el estado anterior de cada flujo para poder calcular diferencia.
+        self.stats_previas = {}
+
 
         # MACs bloqueadas
         self.blocked_macs = set()
 
-        # Parámetros del detector
-        self.TIME_WINDOW = 5        # segundos para considerar
-        self.MAX_PACKETS = 20      # X paquetes permitidos por ventana
+        #Cada cuantos S se revisan las estadisticas
+        self.intervalo = 5
 
-        #self.MAX_BYTES_PER_SECOND = 5000
+        self.MAX_BYTES_PER_SECOND = 5000
 
         # Prioridad alta para que el DROP tenga más peso que reglas normales del switch
         self.BLOCK_PRIORITY = 50000
 
+        self.monitor_thread = hub.spawn(self._monitor)
 
-    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    @set_ev_cls(ofp_eve nt.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         """
         Se ejecuta cuando el switch se conecta al controlador.
         Instala la regla table-miss para enviar paquetes desconocidos al controlador.
         """
         datapath = ev.msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
         self.datapath[datapath.id] = datapath
 
         self.logger.info("Switch conectado: %s", datapath.id)
+
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def state_change_handler(self,ev):
+        #Mantiene actualizada la lista de switches conectados.
+        datapath = ev.datapath
+
+        if ev.state == MAIN_DISPATCHER:
+            if datapath.id not in self.datapaths:
+                self.datapaths[datapath.id] = datapath
+                self.logger.info("Switch registrado: dpid=%s", datapath.id)
+
+        elif ev.state == DEAD_DISPATCHER:
+            if datapath.id in self.datapaths:
+                del self.datapaths[datapath.id]
+                self.logger.info("Switch eliminado: dpid=%s", datapath.id)
+
+
+    def _monitor(self):
+        """
+        Cada MONITOR_INTERVAL segundos solicita estadísticas de flujo
+        a todos los switches conectados.
+        """
+        while True:
+            for datapath in list(self.datapaths.values()):
+                self.request_flow_stats(datapath)
+
+            hub.sleep(self.MONITOR_INTERVAL)
+
 
     def add_flow(self, datapath, priority, match, actions, idle_timeout=0, hard_timeout=0):
         """
@@ -93,7 +121,7 @@ class MacRateBlocker(app_manager.RyuApp):
 
         self.add_flow(
             datapath=datapath,
-            priority=BLOCK_PRIORITY,
+            priority=self.BLOCK_PRIORITY,
             match=match,
             actions=actions
         )
@@ -160,5 +188,5 @@ class MacRateBlocker(app_manager.RyuApp):
         # Detectar abuso por MAC origen
         if self.is_mac_abusive(src):
             for dp in self.datapath.values():
-                self.block_mac(datapath, src)
-                return
+                self.block_mac(dp, src)
+            return
